@@ -298,3 +298,8 @@ cd ..
 
 # Delete SAM files after samtools run
 ```
+
+### 7. Counting and downstream DE analysis in R
+
+- DE analysis with DESeq2 in STAR vs HISAT2 vs Salmon alignment: [DE.Rmd](https://github.com/Mira0507/mouse_cd4/blob/master/DE.Rmd)
+- Comparison of TPM vs Count input in Salmon/DESeq2 pipeline: [salmon_tpm_count.Rmd](https://github.com/Mira0507/mouse_cd4/blob/master/salmon_tpm_count.Rmd)
