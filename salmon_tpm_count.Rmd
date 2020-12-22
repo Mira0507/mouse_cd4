@@ -32,6 +32,7 @@ library(tximport)
 library(ggplot2)
 library(DESeq2)
 library(gridExtra)
+library(pheatmap)
 library(UpSetR)
 library(apeglm)
 library(ashr)
@@ -912,7 +913,7 @@ rankdiff.plot.fn <- function(df, rankedby, ylim) {
         facet_grid(~Shrinkage) + 
         theme(strip.text.x=element_text(size=10)) + 
         ylab("Rank Difference (TPM - Count)") + 
-        ggtitle(paste("Rank Difference Inputs (TPM - Count):", rankedby)) + 
+        ggtitle(paste("Rank Difference (TPM - Count):", rankedby)) + 
         geom_hline(yintercept=0, color="black", size=0.5) + scale_color_gradient(low="blue", high="red") +
         ylim(-ylim, ylim)
 }
@@ -973,8 +974,8 @@ geom_jitter(alpha=0.5) +
 geom_boxplot(alpha=0.5, fill="grey", color="black") + 
 theme_bw() + 
 theme(axis.text.x=element_text(angle=45, hjust=1)) +
-ggtitle("Distribution of Absolute Rank Difference without Shrinkage") + 
-ylab("Absolute Rank Difference") 
+ggtitle("Distribution of Absolute Rank Difference without Shrinkage \n(TPM - Count Input)") + 
+ylab("Absolute Rank Difference (TPM - Count Input)") 
 ```
 
 ## Relationship between rank difference and number of transcript versions
@@ -1023,8 +1024,8 @@ rank.ntrans.plot.fn <- function(df, title) {
     ggplot(df, aes(x=num.trans, y=abs(RankDiff), color=MeanRank)) + 
         geom_jitter(alpha=0.5) + 
         theme_bw() + 
-        ggtitle(paste("Rank Difference vs Number of Transcripts in", title)) + 
-        xlab("Number of Transcripts") + 
+        ggtitle(paste("Rank Difference vs Number of Alternative Transcripts \nin", title)) + 
+        xlab("Number of Alternative Transcripts") + 
         ylab("Absolute Rank Difference (TPM - Counts)") + scale_color_gradient(low="blue", high="red") 
 }
 
