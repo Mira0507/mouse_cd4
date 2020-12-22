@@ -1112,8 +1112,8 @@ geom_jitter(alpha=0.5) +
 geom_boxplot(alpha=0.5, fill="grey", color="black") + 
 theme_bw() + 
 theme(axis.text.x=element_text(angle=45, hjust=1)) +
-ggtitle("Distribution of Absolute Rank Difference without Shrinkage") + 
-ylab("Absolute Rank Difference") 
+ggtitle("Distribution of Absolute Rank Difference without Shrinkage \n (STAR - HISAT2)") + 
+ylab("Absolute Rank Difference (STAR - HISAT2)") 
 ```
 
 
@@ -1161,9 +1161,9 @@ rank.ntrans.plot.fn <- function(df, title) {
     ggplot(df, aes(x=num.trans, y=abs(RankDiff), color=MeanRank)) + 
         geom_jitter(alpha=0.5) + 
         theme_bw() + 
-        ggtitle(paste("Rank Difference vs Number of Transcripts in", title)) + 
-        xlab("Number of Transcripts") + 
-        ylab("Absolute Rank Difference (STAR - HISAT2)") + scale_color_gradient(low="blue", high="red") 
+        ggtitle(paste("Rank Difference vs Number of Alternative Transcripts \n in", title)) + 
+        xlab("Number of Alternative Transcripts") + 
+        ylab("Absolute Rank Difference \n (STAR - HISAT2)") + scale_color_gradient(low="blue", high="red") 
 }
 
 # Print the plots
