@@ -1211,8 +1211,8 @@ head(large.rankdiff[[rankdiff.levels[3]]])
 head(large.rankdiff[[rankdiff.levels[4]]])
 
 # Save the filtered and arranged data frames as csv files
-write.csv(large.rankdiff[[rankdiff.levels[1]]], "FDR_RankDiff.csv")
-write.csv(large.rankdiff[[rankdiff.levels[2]]], "LFC_RankDiff.csv")
+write.csv(large.rankdiff[[rankdiff.levels[1]]], "DE_FDR_RankDiff.csv")
+write.csv(large.rankdiff[[rankdiff.levels[2]]], "DE_LFC_RankDiff.csv")
 
 ```
 
