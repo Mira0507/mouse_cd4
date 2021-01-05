@@ -1190,7 +1190,10 @@ for (x in rankdiff.levels) {
 
     # Filter out observations below the rankdiff thresholds
     large.rankdiff[[x]] <- subset(rankList[[x]], 
-                                      abs(RankDiff) > rankdiff.thr[x]) 
+                                      abs(RankDiff) > rankdiff.thr[x]) %>% 
+
+    # Arrange by descending order of RankDiff
+    arrange(desc(abs(RankDiff)))
 
 }
 
@@ -1202,7 +1205,14 @@ dim(large.rankdiff[[rankdiff.levels[2]]])
 dim(large.rankdiff[[rankdiff.levels[3]]])
 dim(large.rankdiff[[rankdiff.levels[4]]])
 
+head(large.rankdiff[[rankdiff.levels[1]]])
+head(large.rankdiff[[rankdiff.levels[2]]])
+head(large.rankdiff[[rankdiff.levels[3]]])
+head(large.rankdiff[[rankdiff.levels[4]]])
 
+# Save the filtered and arranged data frames as csv files
+write.csv(large.rankdiff[[rankdiff.levels[1]]], "FDR_RankDiff.csv")
+write.csv(large.rankdiff[[rankdiff.levels[2]]], "LFC_RankDiff.csv")
 
 ```
 
