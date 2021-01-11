@@ -95,17 +95,17 @@ head(cleaned.rankdiff)
 
 ## Characterization of differently ranked genes between STAR and HISAT2-mediated differential expression (DE) analysis 
 
-###- RankDiff: absolute gene rank difference STAR and HISAT2 (followed by featureCounts)
+#### - RankDiff: absolute gene rank difference STAR and HISAT2 (followed by featureCounts)
 
-###- MeanRank: mean rank between STAR and HISAT2
+#### - MeanRank: mean rank between STAR and HISAT2
 
-###- Num.Transcripts: number of alternative transcripts
+#### - Num.Transcripts: number of alternative transcripts
 
-###- Variant.Alleles: variant alleles (SNP or indel from ensembl genetic variation table)
+#### - Variant.Alleles: variant alleles (SNP or indel from ensembl genetic variation table)
 
-###- Repetitive.Conserved: conserved repetitive elements in reference genome (from Dfam database)
+#### - Repetitive.Conserved: conserved repetitive elements in reference genome (from Dfam database)
 
-###- Repetitive.Simple: non-conserved repetitive elements in reference genome (from Dfam)
+#### - Repetitive.Simple: non-conserved repetitive elements in reference genome (from Dfam)
 
 ```{r characterization_plot}
 
@@ -119,7 +119,7 @@ geom_jitter(width=0.25, alpha=0.7) +
     theme_bw() + 
     theme(strip.text.x=element_text(size=11),
           axis.text.x=element_text(size=10)) + 
-    ggtitle(paste("Characteristics of Top and Bottom Ranking Genes in", 
+    ggtitle(paste("Characteristics of Differently Ranking Genes in", 
                   Ranking.Category)) +
     xlab("Gene Rank Difference") + 
     ylab("Value")
@@ -127,13 +127,8 @@ geom_jitter(width=0.25, alpha=0.7) +
 
 ## Calculating statiatical significance 
 
-###- formula: response variable ~ explanatory variable
 
-###- response variables: MeanRank, Num.Transcripts, Variant.Alleles, Repetitive.Conserved, or Repetitive.Simple
-
-###- explanatory variable: Difference (Large/Small)
-
-###- Two-tailed test 
+#### - Two-tailed test 
 
 
 ```{r t_test}
@@ -181,7 +176,7 @@ geom_jitter(width=0.25, alpha=0.7) +
     theme_bw() + 
     theme(strip.text.x=element_text(size=11),
           axis.text.x=element_text(size=10)) + 
-    ggtitle(paste("Characteristics of Top and Bottom Ranking Genes in", 
+    ggtitle(paste("Characteristics of Differently Ranking Genes in", 
                   Ranking.Category)) +
     xlab("Gene Rank Difference") + 
     ylab("Value") + 
