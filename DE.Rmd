@@ -1213,7 +1213,8 @@ head(large.rankdiff[[rankdiff.levels[4]]])
 # Save the filtered and arranged data frames as csv files
 write.csv(large.rankdiff[[rankdiff.levels[1]]], "DE_FDR_RankDiff.csv")
 write.csv(large.rankdiff[[rankdiff.levels[2]]], "DE_LFC_RankDiff.csv")
-
+write.csv(large.rankdiff[[rankdiff.levels[3]]], "DE_Increase_LFC_RankDiff.csv")
+write.csv(large.rankdiff[[rankdiff.levels[4]]], "DE_Decrease_LFC_RankDiff.csv")
 ```
 
 ## Summarizing up/down DEGs with an upset plot
