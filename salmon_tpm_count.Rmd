@@ -1,0 +1,1144 @@
+---
+title: "TPM vs Count Inputs in Mouse CD4-Positive T cell RNA-seq" 
+output: html_document
+author: "Mira Sohn"
+---
+
+## Raw data 
+
+#### - **GEO number**: [GSE128615](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE128615)
+
+#### - **Study summary**: To determine the influence of differential Kdm6a expression in immune cells, whole transcriptome analysis for CD4+ T cells from WT and Kdm6a cKO mice were performed using RNA-Seq.
+
+#### - **Reference**: [J Clin Invest. 2019 Aug 12;129(9):3852-3863. doi: 10.1172/JCI126250.](https://pubmed.ncbi.nlm.nih.gov/31403472)
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(
+    warning=FALSE,
+    message=FALSE
+    )
+```
+
+
+
+## Loading packages
+
+```{r loading_packages}
+library(data.table)
+library(rmarkdown)
+library(AnnotationHub)
+library(tidyverse)
+library(tximport)
+library(ggplot2)
+library(DESeq2)
+library(gridExtra)
+library(pheatmap)
+library(UpSetR)
+library(ensembldb)
+library(apeglm)
+library(ashr)
+```
+
+## Setting AnnotationHub
+
+
+```{r annotationhub_setup}
+DB <- "EnsDb"  # Assing your species
+AnnotationSpecies <- "mus musculus"  # Assign your species 
+ah <- AnnotationHub(hub=getAnnotationHubOption("URL"))   # Connect to annotation DB
+```
+
+## Running AnnotationHub 
+
+```{r run_annotationhub}
+
+# Filter annotation of interest
+ahQuery <- query(ah, 
+                 pattern=c(DB, AnnotationSpecies), 
+                 ignore.case=T)      
+
+
+# Select the most recent data
+DBName <- mcols(ahQuery) %>%
+    rownames() %>%
+    tail(1)
+
+AnnoDb <- ah[[DBName]] 
+
+# Explore your EnsDb object with following accessors:
+# columns(AnnpDb)
+# keytypes(AnnoDb)
+# keys(AnnoDb, keytype=..)
+# select(AnnoDb, keys=.., columns=.., keytype=...)
+AnnoKey <- keys(AnnoDb, keytype="TXID")
+
+# Note: Annotation has to be done with not genome but transcripts 
+AnnoDb <- select(AnnoDb, 
+                 AnnoKey,
+                 keytype="TXID",
+                 columns=c("GENEID", "GENENAME")) 
+
+
+
+# Check if your AnnoDb has been extracted and saved correctely
+class(AnnoDb)
+head(AnnoDb)
+```
+
+
+## Defining file name and path for .sf files
+
+.sf files have been created from fastq data by salmon
+
+
+```{r preparing_importing.sf}
+
+# This code chunk needs to be written by yourself 
+#
+# Define sample names 
+SampleNames <-  c(paste0("WT-rep", 1:3), paste0("cKO-rep", 1:3)) 
+
+# Define group level
+GroupLevel <- c("WT", "cKO")
+
+# Define contrast for DE analysis
+Contrast <- c("Group", "cKO", "WT")
+
+
+# Define a vector for comparing TPM vs Counts effect 
+TvC <- c("TPM", "Counts")
+levels(TvC) <- TvC
+
+# Define .sf file path
+sf <- c(paste0("salmon_output/", 
+               SampleNames,
+               ".salmon_quant/quant.sf"))
+
+# Define sample groups
+group <- c(rep(GroupLevel[1], 3), rep(GroupLevel[2], 3))
+
+# Create metadata
+metadata <- data.frame(Sample=factor(SampleNames, levels=SampleNames),
+                       Group=factor(group, levels=GroupLevel),
+                       Path=sf)
+
+rownames(metadata) <- SampleNames
+
+# Explore the metadata
+print(metadata)
+```
+
+## Converting .sf files to txi list 
+
+#### - txi_tpm: stores **TPM** with the argument **"countsFromAbundance="lengthScaledTPM"**
+
+#### - txi_counts: stores **original counts** 
+
+#### - Despite that the TPM matrix is not recommended as an input for DE analysis due to the fact that it doesn't account gene length, TPM stored in a tximport (by **tximport(..., countsFromAbundance="lengthScaledTPM")**) can be used for DE analysis by being inputted with the **DESeqDataSetFromTximport()** funtion in DESeq2 workflow as the gene length is automatically adjusted by DESeqDataSetFromTximport(). 
+
+#### - In this project, two txi objects were created with or without the countsFromAbundance="lengthScaledTPM" argument and compared in downstream DE analysis. 
+
+#### - If you don't want gene-level summarization, set **txOut=TRUE**. 
+
+#### - References: [**tximport doc**](https://bioconductor.riken.jp/packages/3.4/bioc/vignettes/tximport/inst/doc/tximport.html), [**DESeq2 doc "Why unnormalized counts?"**](https://www.bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#why-un-normalized-counts), [**Soneson et al. 2016**](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4712774/), [**Developer Dr. Love's comment**](https://support.bioconductor.org/p/84059/), [**Harvard Chan Bioinformatics Core workshop**](https://github.com/hbctraining/DGE_workshop_salmon_online/blob/master/lessons/02_DGE_count_normalization.md)
+
+
+```{r saving_reads_to_dataframe}
+
+# Assign sample names to the input (.sf) file path
+names(sf) <- SampleNames
+
+# Run tximport
+# tpm vs original counts
+# input sf: a factor of all .sf files' path
+txi_tpm <- tximport(sf, 
+                    type="salmon",
+                    tx2gene=AnnoDb,
+                    countsFromAbundance="lengthScaledTPM", # Extracts TPM 
+                    ignoreTxVersion=T) 
+
+txi_counts <- tximport(sf, 
+                    type="salmon",
+                    tx2gene=AnnoDb,
+                    ignoreTxVersion=T) 
+
+# tpm 
+head(txi_tpm$counts)
+dim(txi_tpm$counts)
+
+# counts
+head(txi_counts$counts)
+dim(txi_counts$counts)
+```
+
+
+
+## Creating DESeq objects from txi and VST
+
+#### - Note: The tximport-to-DESeq2 approach uses estimated gene counts from the transcript abundance quantifiers, but not normalized counts.
+
+#### - The **DESeqDataSetFromTximport()** function generated an DESeq object (aka **dds**) with the **txi input**. 
+
+#### - **vst()** was run to perform variance stabilizing transformation instead of rlog() which takes longer time with similar characteristics. 
+
+#### - The **vsd** object created by vst() is used for not DE analysis but QC. 
+
+#### - References: [**DESeq2 doc "Transcript abundance files"**](https://www.bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#tximport), [**DESeq2 doc "Variance stabilizing transformation"**](https://www.bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#variance-stabilizing-transformation)
+
+
+
+
+```{r creating_dds_vsd}
+
+# Set a function creating dds and vsd
+dds_vsd_fn <- function(txi) { 
+
+    # Create a DESeq object (so-calledd dds) 
+    des <- DESeqDataSetFromTximport(txi, 
+                                    colData=metadata,
+                                    design=~Group)
+
+    # Create a vsd object (so-called vsd) 
+    ves <- vst(des, blind=T)
+
+    # Output them as a list 
+    return(list(dds=des, vsd=ves))
+
+}
+
+TPM <- dds_vsd_fn(txi_tpm)
+Counts <- dds_vsd_fn(txi_counts)
+# Outputs
+# dds: TPM/Counts[[1]] or TPM/Counts[['dds']] 
+# vsd: TPM/Counts[[2]] or TPM/Counts[['vsd']]
+```
+
+
+## Exploring created dds 
+
+```{r exploring_dds}
+
+# TPM 
+TPM[[1]]
+head(counts(TPM[[1]]))
+
+
+# Counts
+Counts[[1]]
+head(counts(Counts[[1]]))
+```
+
+## Exploring created vsd
+
+```{r exploring_vsd}
+# TPM
+TPM[[2]]
+# Counts
+Counts[[2]]
+```
+
+## Estimating size factors, dispersions, and conducting Wald Test
+
+#### - **Dispersion** is calculated as a **measure of variation** instead of variance since variance gets larger when gene expression gets higher. 
+
+#### - **Wald test** is the default setting of DESeq2 which tests null hypothesis between **two groups**. You should use **Likelihood ratio test (LRT)** when comparing **more than two groups**.     
+
+#### - Messages when "Counts <- DESeqPrep_fn(Counts)" was run: using **'avgTxLength'** from assays(dds)
+
+#### - References: [**Harvard Chan Bioinformatics Core workshop I**](https://github.com/hbctraining/DGE_workshop_salmon_online/blob/master/lessons/05b_wald_test_results.md), [**Harvard Chan Bioinformatics Core workshop II**](https://github.com/hbctraining/DGE_workshop_salmon_online/blob/master/lessons/05a_hypothesis_testing.md), [**Harvard Chan Bioinformatics Core workshop III**](https://github.com/hbctraining/DGE_workshop_salmon_online/blob/master/lessons/04b_DGE_DESeq2_analysis.md), [**DESeq2 "Wald test indivisual steps**](https://www.bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#wald-test-individual-steps), [**DESeq2 doc "Likelihood ratio test"**](https://www.bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#likelihood-ratio-test)
+
+
+```{r DESeq_prep}
+# Set a function estimating size factors, dispersions, and perform wald test
+DESeqPrep_fn <- function(List) {
+    
+    List[[1]] <- estimateSizeFactors(List[[1]])
+    List[[1]] <- estimateDispersions(List[[1]])
+    List[[1]] <- nbinomWaldTest(List[[1]])
+   
+    return(List)
+}
+# Update dds with the function
+Counts <- DESeqPrep_fn(Counts) 
+TPM <- DESeqPrep_fn(TPM)
+```
+
+## Exploring size factors
+
+```{r exploring_sizefactors}
+sizeFactors(Counts[[1]])
+sizeFactors(TPM[[1]])
+# Size factors don't exist in the Counts dds!
+# Normalization factors are calculated in the Counts dds instead! 
+assays(Counts[[1]])
+assays(TPM[[1]])
+colData(Counts[[1]])
+colData(TPM[[1]])
+```
+
+## Plotting the size factors in TPM
+
+#### - The size factors are only available from TPM dds 
+
+#### - Blue dashed line: normalization factor = 1
+
+
+```{r plotting_sizefactors}
+# Extract and save the size factors in a data frame
+sizeFactor <- as.data.frame(round(sizeFactors(TPM[[1]]), 3))
+
+colnames(sizeFactor) <- 'Size_Factor'
+
+sizeFactor <- sizeFactor %>%
+    rownames_to_column(var="Sample") %>%
+    inner_join(metadata[, 1:ncol(metadata)-1], by="Sample") 
+
+sizeFactor$Sample <- factor(sizeFactor$Sample, levels=SampleNames)
+
+
+
+# Create a plot comparing the size factors by sample
+ggplot(sizeFactor, aes(x=Sample, 
+                       y=Size_Factor, 
+                       fill=Group,
+                       label=Size_Factor)) +
+    geom_bar(stat="identity", width=0.8) +
+    theme_bw() + 
+    ggtitle("Size Factors in TPM-DESeq") +
+    geom_text(vjust=1.5) +
+    theme(axis.text.x=element_text(angle=45, 
+                                   vjust=0.5)) + ylab("Size Factor") + geom_hline(yintercept=1, color="blue", linetype="dashed")
+    
+```
+
+
+## Plotting nornalization factors in the Counts
+
+#### - DESeq2 performs an internal normalization where geometric mean is calculated for each gene across all samples. The counts for a gene in each sample is then divided by this mean. The median of these ratios in a sample is the size factor for that sample.
+
+#### - Blue dashed line: normalization factor = 1
+
+#### - Colored **dots**: **normlization factors per gene** (y-axis) in each sample 
+
+#### - Box plots: distribution of the normalization facters in each group (see the second plot)
+
+#### - Reference: [**DESeq2 doc "Sample-/gene-dependent normalization factors"**](https://www.bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#log-fold-change-shrinkage-for-visualization-and-ranking)
+
+```{r plotting_normalizationfactors}
+# Extract and normalization factors in a data frame
+normf <- as.data.frame(normalizationFactors(Counts[[1]])) %>%
+    gather(Sample, Normalization_Factor) %>%
+    inner_join(metadata[, 1:2], by="Sample") 
+normf$Sample <- factor(normf$Sample, levels=SampleNames)
+normf$Group <- factor(normf$Group, levels=GroupLevel)
+# Create a scatter plot showing distribution of normalization factors 
+normFactors_plot <- ggplot(normf, 
+       aes(x=Sample, y=Normalization_Factor)) + 
+geom_jitter(alpha=0.5, aes(color=Group)) + 
+# Add a boxplot to provide statistics in each sample
+geom_boxplot(aes(x=Sample, y=Normalization_Factor), 
+             outlier.shape=NA, alpha=0.5) + 
+theme_bw() +
+ggtitle("Normalization Factors in Counts-DESeq") +
+theme(axis.text.x=element_text(angle=45, 
+                               vjust=0.5)) + 
+ylab("Normalization Factor / Gene") +
+# Add a dashed horizontal line to indicate where normalization factor=1
+geom_hline(yintercept=1, 
+           color="blue", 
+           linetype="dashed")
+# Print the normalization factor scatter plot 
+print(normFactors_plot)
+# Print the same plot with larger y-magnification in order to observe the box plot 
+normFactors_plot + 
+    ylim(0.8, 1.2)
+```
+
+
+
+## Setting functions for QC plots
+
+#### - Reference: [**DESeq2 doc "Principal component plot of the samples"**](https://www.bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#principal-component-plot-of-the-samples), [**DESeq2 doc "Heatmap of the sample-to-sample distances"**](https://www.bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#heatmap-of-the-sample-to-sample-distances)
+
+```{r QCplot_functions}
+
+# Assigne what to compare
+GroupOfInterest <- Contrast[1] 
+
+# Set a function for a PCA plot
+QCPCA_fn <- function(inputList, Title) {
+
+    plotPCA(inputList[[2]],    # takes vsd
+            intgroup=GroupOfInterest) + theme_bw() + ggtitle(Title)
+}
+
+# Set heatmap annotation 
+ColOfInterest <- !colnames(metadata) %in% c("Sample", "Path")
+HeatmapAnno <- as.data.frame(metadata[, ColOfInterest])
+rownames(HeatmapAnno) <- SampleNames
+colnames(HeatmapAnno) <- colnames(metadata)[ColOfInterest]
+
+# Set a function for a correlation heatmap 
+QCcorrHeatmap_fn <- function(inputList, Title) {
+
+    # Extract transformed count matrix
+    mtx <- assay(inputList[[2]])      # takes vsd
+
+    # Calculate correlation and store in the matrix
+    mtx <- cor(mtx)
+    
+    # Create a correlation heatmap
+    return(pheatmap(mtx, 
+             annotation=HeatmapAnno,
+             main=paste("Sample Correlation Heatmap:",
+                        Title)))
+}
+```
+
+
+## Sample QC: Principal Component Analysis (PCA)
+
+#### - Checkpoints in PCA: source of variation, sample outlier
+
+
+
+```{r QC_PCA}
+grid.arrange(QCPCA_fn(TPM, "QC PCA: TPM"), 
+             QCPCA_fn(Counts, "QC PCA: Counts"), 
+             nrow=2)
+```
+
+
+
+## Sample QC: Sample Correlation Heatmap
+
+#### - Checkpoints of correlation heatmap: distance between samples, correlation in a group
+
+#### - Upper: TPM input
+
+#### - Lower: Counts input
+
+
+
+```{r QC_correlation_heatmap}
+# TPM
+QCcorrHeatmap_fn(TPM, "TPM") 
+# Counts
+QCcorrHeatmap_fn(Counts, "Counts") 
+```
+
+## Running DE analysis with or without shrinkage
+
+#### - Shrinkage reduces false positives
+
+#### - Magnitude of shrinkage is affected by dispersion and sample size
+
+#### - When the argument **type** is set to **"apeglm"**, the **coef** argument is used instead of constrast. In this dataset, you can set **coef=Coef** where **Coef <- resultsNames(ddsList[[1]])**. 
+
+#### - When the **type** is set to **"normal"**, the argument **contrast** is set as shown below. 
+
+#### - References: [**DESeq2 doc "Alternative shrinkage estimators"**](https://www.bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#alternative-shrinkage-estimators), [**Harvard Chan Bioinformatics Core workshop **](https://github.com/hbctraining/DGE_workshop_salmon_online/blob/master/lessons/04b_DGE_DESeq2_analysis.md)
+
+```{r DE_analysis}
+
+# Create a list consisted with dds objects from TPM and Counts
+desList <- list(TPM[[1]], Counts[[1]]) 
+names(desList) <- TvC
+
+# Create a list for TPM and Counts dds 
+ddsList <- desList  # DE without shrinkage  
+normal.ddsList <- desList    # DE with "normal" shrinkage
+ape.ddsList <- desList       # DE with "apeglm" shrinkage
+ash.ddsList <- desList       # DE with "ashr" shrinkage
+
+for (x in TvC) {
+    
+    # Run DESeq() 
+    ddsList[[x]] <- DESeq(desList[[x]])
+    print(resultsNames(ddsList[[x]]))
+
+    normal.ddsList[[x]] <- lfcShrink(ddsList[[x]],
+                                contrast=Contrast,
+                                type="normal")
+
+    ape.ddsList[[x]] <- lfcShrink(ddsList[[x]],
+                             coef=resultsNames(ddsList[[x]])[2],
+                             type="apeglm")
+
+    ash.ddsList[[x]] <- lfcShrink(ddsList[[x]],
+                             coef=resultsNames(ddsList[[x]])[2],
+                             type="ashr")
+
+}
+
+# Combine every ddsList into a list
+all.ddsList <- list(ddsList, normal.ddsList, ape.ddsList, ash.ddsList)
+shrinkage <- c("None", "Normal", "Apeglm", "Ashr")
+names(all.ddsList) <- shrinkage
+```
+
+
+
+## Creating dispersion plots
+
+#### - Dispersion is important since estimation by DESeq2 algorithm is based on the assumption that genes with similar expression levels have similar dispersion. If an RNA-seq dataset doesn't satisfy this assumption, use other DE algorithms than DESeq2. 
+
+#### - References: [**DESeq2 doc "Dispersion plot and fitting alternatives**](https://www.bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#dispersion-plot-and-fitting-alternatives), [**Harvard Chan Bioinformatics Core workshop **](https://github.com/hbctraining/DGE_workshop_salmon_online/blob/master/lessons/04b_DGE_DESeq2_analysis.md)
+
+
+
+```{r dispersion_plot}
+
+# Plot dispersion  
+for (x in TvC) {
+
+    plotDispEsts(ddsList[[x]], 
+                 ylab="Dispersion", 
+                 xlab="Mean of Normalized Counts", 
+                 main=paste("Dispersion of", x, "Input"))
+}
+```
+
+
+## Extracting DE results with or without shrinkage
+
+#### - The **alpha** denotes threshold of **false discovery rate (FDR)** assigned by users.
+
+#### - In this analysis, the alpha is set to **0.1** 
+
+```{r extracting_results}
+
+# Set FDR threshold 
+alpha=0.1 
+
+# FDR threshold vector
+FDRv=c("< 0.1", "> 0.1") 
+
+# Initialize lists of result tables 
+all.resList <- all.ddsList 
+
+# Set a function cleaning table
+Sig.fn <- function(df, Input) {
+    
+    df <- df %>% 
+        rownames_to_column(var="Gene") %>%
+        mutate(FDR=ifelse(padj < 0.1 & !is.na(padj), 
+                                   FDRv[1], 
+                                   FDRv[2]), 
+               Input=Input) 
+    return(df)
+}
+
+
+
+
+for (i in shrinkage) {
+
+    if (i == "None") {
+
+        for (x in TvC) {
+
+        # Extract data frames from unshrunken lfc & clean data 
+        all.resList[[i]][[x]] <- as.data.frame(results(all.ddsList[[i]][[x]], 
+                                                       contrast=Contrast, 
+                                                       alpha=alpha)) %>% 
+        Sig.fn(x)
+
+         } 
+    } else {
+
+        # Extract data frames from shrunken lfc & clean data
+        for (x in TvC) {
+
+            all.resList[[i]][[x]] <- as.data.frame(all.ddsList[[i]][[x]]) %>%
+                Sig.fn(x)
+    
+
+        }
+    }
+}
+
+
+
+
+
+# Explore the results 
+summary(all.resList)
+head(all.resList[[1]][['TPM']])
+head(all.resList[[1]][['Counts']])
+head(all.resList[[2]][['TPM']])
+head(all.resList[[2]][['Counts']])
+```
+
+## Exploring mean-difference relationship with MA plots
+
+
+#### - **x-axis**: expression level (baseMean))
+
+#### - **y-axis**: fold change (log2FoldChange)
+
+#### - **Red dashed lines**: log2FoldChange = -1 and 1
+
+#### - Reference: [**DESeq2 doc "MA-plot"**](https://www.bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#ma-plot)
+
+
+```{r MAplot}
+
+# Set ylim: has to adjusted by users depending on data 
+yl <- c(-7.5, 7.5)
+
+# Set min log2 fold change of interest 
+mLog <- c(-1, 1)
+
+# Initialize a list storing MA plots
+MAList <- ddsList
+
+
+# Create MA plots
+
+for (i in shrinkage) {
+
+    both.df <- rbind(all.resList[[i]][[TvC[1]]], 
+                     all.resList[[i]][[TvC[2]]])
+
+    MAList[[i]] <- ggplot(both.df, 
+                              aes(x=baseMean, y=log2FoldChange, color=FDR))  +geom_point() + scale_x_log10() + facet_grid(~Input) + 
+                                   theme_bw() + 
+                                   scale_color_manual(values=c("blue", "grey")) +
+                                   ggtitle(paste("MA plot with", i)) + 
+                                   ylim(yl[1], yl[2]) + 
+                                   geom_hline(yintercept=c(mLog[1], mLog[2]), linetype="dashed", color="red") 
+
+}
+
+   
+
+# Print MA plots
+MAList
+```
+
+
+## Exploring distribution of false discovery rate (FDR)
+
+#### - Distribution of adjusted p-val (FDR) was presented 
+
+#### - **x-axis**: FDR
+
+#### - **y-axis**: Number of genes
+
+#### - **Black dashed line**: FDR = alpha
+
+```{r FDR_distribution}
+
+
+# Subset rows with FDR < alpha
+both.df <- rbind(all.resList[[1]][['TPM']], 
+                 all.resList[[1]][['Counts']])
+both.df$Input <- factor(both.df$Input, levels=TvC)
+
+# Plot distribution of FDR
+ggplot(both.df,
+       aes(x=padj, color=Input)) + 
+geom_density(size=1, aes(y=..count..)) + 
+theme_bw() +
+ggtitle("Distribution of False Discovery Rate (FDR)") + 
+xlab("Adjusted P-Value (FDR)") + 
+ylab("Count") + 
+geom_vline(xintercept=alpha, 
+           color="black", 
+           linetype="dashed",
+           size=1) + 
+scale_x_continuous(breaks=seq(0, 1, by=0.1)) 
+
+
+```
+
+
+## Exploring distribution of log2FoldChange by input type
+
+#### - **Black dashed lines**: log2FoldChange = -1 and 1 
+
+#### - **x-axis**: gene expression level (log2FoldChange) 
+
+#### - **y-axis**: number of genes 
+
+```{r L2FC_distribution}
+# Initialize a lfc list
+lfcplotList <- all.resList 
+
+# Create lfc distribution plots
+for (i in shrinkage) {
+
+    lfc.df <- rbind(all.resList[[i]][[TvC[1]]], 
+                    all.resList[[i]][[TvC[2]]])
+
+    lfc.df <- lfc.df[lfc.df$FDR == "< 0.1",]
+
+    lfc.df$Input <- factor(lfc.df$Input, levels=TvC)
+
+    lfcplotList[[i]] <- ggplot(lfc.df,  # Subset rows with FDR < alpha
+                               aes(x=log2FoldChange, color=Input)) + 
+geom_density(size=1, aes(y=..count..)) + 
+theme_bw() + ylab("Count") + 
+geom_vline(xintercept=c(mLog[1], mLog[2]), 
+           color="black", 
+           linetype="dashed", 
+           size=1) + 
+ggtitle(paste("Distribution of Log2FoldChange by Input Type:", i)) + 
+xlim(-5, 5)
+
+
+}
+
+# Print the lfc plots
+lfcplotList
+```
+
+
+
+## NA statistics: zero count genes & outlier genes  
+
+
+#### When NAs appear in  
+
+#### - **log2FoldChange**: zero counts in all samples
+
+#### - **padj**: too little information 
+
+#### - **pval & padj**: at least one replicate was an outlier 
+
+
+
+```{r DEG_statistics}
+
+# Count number of NA genes  
+type=c("Zero Counts", "Outliers", "Total NA Genes") 
+
+
+# Create a data frame storing NA gene number
+NAstat <- both.df %>%
+    group_by(Input) %>%
+    summarize(zero=sum(is.na(log2FoldChange)), 
+              outlier=sum(is.na(pvalue) & is.na(padj))) %>%
+    mutate(total=zero + outlier) %>%
+    gather(Type, Number, -Input) %>%
+    mutate(Type=factor(case_when(Type == "zero" ~ type[1], 
+                                 Type == "outlier" ~ type[2], 
+                                 Type == "total" ~ type[3]), 
+                       levels=type))
+
+# Plot number of NA genes 
+ggplot(NAstat, 
+       aes(x=Type, y=Number, group=Input, fill=Input, label=Number)) + 
+    geom_bar(stat="identity", position="dodge") + 
+    theme_bw() +
+    geom_text(position=position_dodge(width=1), vjust=1.5) + 
+    ggtitle("Number of NA Genes") + 
+    ylab("Number of Genes")
+```
+
+
+## Ranking DEGs with the TPM and original count inputs
+
+#### - **fdr.rank**: ranked by FDR
+
+#### - **lfc.rank**: ranked by absolute fold change 
+
+#### - **up.lfc.rank**: ranked by magnitude of fold change increase 
+
+#### - **down.lfc.rank**: ranked by manitude of fold change decrease
+
+
+```{r determining_DEGrank}
+
+# Create a new list having DE table with FDR below alpha
+fdr.rank <- all.resList
+lfc.rank <- all.resList
+up.lfc.rank <- all.resList
+down.lfc.rank <- all.resList
+
+# Set a function cleaning a data frame 
+filter.fdr.fn <- function(df) {as.data.table(df[df$FDR == FDRv[1],])}
+
+# Set a function creating a column for the rank
+Ranking.fn <- function(x) {mutate(x, Rank=1:nrow(x))}
+
+
+for (i in shrinkage) {
+
+    for (x in TvC) {
+
+        rankdf <- all.resList[[i]][[x]]
+
+        fdr.rank[[i]][[x]] <- filter.fdr.fn(rankdf) %>% arrange(padj) %>% Ranking.fn() 
+
+        lfc.rank[[i]][[x]] <- filter.fdr.fn(rankdf) %>% arrange(desc(abs(log2FoldChange))) %>% Ranking.fn()
+
+        up.lfc.rank[[i]][[x]] <- filter.fdr.fn(rankdf) %>% 
+            arrange(desc(log2FoldChange)) %>% 
+            Ranking.fn()
+
+        down.lfc.rank[[i]][[x]] <- filter.fdr.fn(rankdf) %>%
+            arrange(log2FoldChange) %>%
+            Ranking.fn()
+
+
+
+    }
+}
+
+# Explore the ranking outputs
+head(fdr.rank[[1]][[1]])
+head(fdr.rank[[1]][[2]])
+
+head(lfc.rank[[1]][[1]])
+head(lfc.rank[[1]][[2]])
+
+head(up.lfc.rank[[1]][[1]])
+head(up.lfc.rank[[1]][[2]])
+
+head(down.lfc.rank[[1]][[1]])
+head(down.lfc.rank[[1]][[2]])
+```
+
+
+## Calculating rank difference 
+
+
+```{r gene_ranking}
+
+# Set a function rebuilding DE tables with gene ranks 
+rankdiff.fn <- function(List){
+
+    # Select columns and join the data frames by gene
+    full_join(List[[TvC[1]]][, .(Gene, Input, Rank, baseMean)], 
+              List[[TvC[2]]][, .(Gene, Input, Rank, baseMean)], 
+              by="Gene") %>%
+    
+    # Add columns assining gene expression levels, rank differences, and mean ranks
+    mutate(logMeanExpression=log(baseMean.x+baseMean.y/2),
+           RankDiff=Rank.x-Rank.y, 
+           MeanRank=(Rank.x+Rank.y)/2)
+} 
+
+# Set a function adding Shrinkage column 
+add.shr.fn <- function(df, shr) {mutate(df, Shrinkage=shr)} 
+
+# Set a function rbinding multiple data frames 
+rbinds.fn <- function(List) {rbind(List[[1]], 
+                                   List[[2]], 
+                                   List[[3]], 
+                                   List[[4]])}
+
+
+
+# Calculate and plot rank difference
+for (i in shrinkage) {
+
+    # Calculate rank difference
+    fdr.rank[[i]] <- rankdiff.fn(fdr.rank[[i]]) %>% add.shr.fn(i)
+    lfc.rank[[i]] <- rankdiff.fn(lfc.rank[[i]]) %>% add.shr.fn(i)
+    up.lfc.rank[[i]] <- rankdiff.fn(up.lfc.rank[[i]]) %>% add.shr.fn(i)
+    down.lfc.rank[[i]] <- rankdiff.fn(down.lfc.rank[[i]]) %>% add.shr.fn(i) 
+
+}
+
+# Create combined data frames across the shrinkages 
+fdr.rank.df <- rbinds.fn(fdr.rank) 
+lfc.rank.df <- rbinds.fn(lfc.rank)
+up.lfc.rank.df <- rbinds.fn(up.lfc.rank)
+down.lfc.rank.df <- rbinds.fn(down.lfc.rank)
+
+
+
+# Explore the ranking outputs
+head(fdr.rank.df)
+head(lfc.rank.df)
+head(up.lfc.rank.df)
+head(down.lfc.rank.df)
+```
+
+
+
+
+## Visualizing DEG ranks I: TPM- vs Counts-input
+
+#### - **x-axis**: rank with TPM input
+
+#### - **y-axis**: rank with Counts input 
+
+#### - Black diagonal lines: rank with TPM = rank with Counts 
+
+#### - Dot color: gene expression level (log-baseMean)
+
+```{r ranking_plot}
+
+# Set a function plotting gene ranks between TPM- (x-axis) and Counts-Inputs (y-axis)
+ranking.plot.fn <- function(df, rankedby) {
+
+    df$Shrinkage <- factor(df$Shrinkage, levels=shrinkage)
+
+    ggplot(df, 
+           aes(x=Rank.x, y=Rank.y, color=logMeanExpression)) + geom_point(alpha=0.5) + facet_grid(~Shrinkage) + theme_bw() + theme(strip.text.x=element_text(size=10)) + xlab("Rank with TPM") + ylab("Rank with Counts") + geom_abline(slope=1, color="black", size=0.5) + ggtitle(paste(rankedby, "Ranking with TPM vs Count Inputs")) + scale_color_gradient(low="blue", high="red") 
+}
+
+# Print output plots
+ranking.plot.fn(fdr.rank.df, "FDR")
+ranking.plot.fn(lfc.rank.df, "Log2FoldChange")
+ranking.plot.fn(up.lfc.rank.df, "Log2FoldChange (Increase)")
+ranking.plot.fn(down.lfc.rank.df, "Log2FoldChange (Decrease)")
+```
+
+
+
+## Visualizing DEG ranks II: Rank difference 
+
+#### - **x-axis**: expression level (log-baseMean)
+
+#### - **y-axis**: rank difference (rank with TPM - rank with Counts)
+
+#### - Black horizontal lines: rank with TPM = rank with Counts 
+
+#### - Dot color: average rank 
+
+
+
+```{r comparing_DEGrankII}
+
+# Set a function plotting the rank difference over the gene expression level
+rankdiff.plot.fn <- function(df, rankedby, ylim) {
+
+    df$Shrinkage <- factor(df$Shrinkage, levels=shrinkage)
+
+    ggplot(df, aes(x=logMeanExpression, y=RankDiff, color=MeanRank)) + 
+        geom_point(alpha=0.5) + 
+        theme_bw() + 
+        facet_grid(~Shrinkage) + 
+        theme(strip.text.x=element_text(size=10)) + 
+        ylab("Rank Difference (TPM - Count)") + 
+        ggtitle(paste("Rank Difference (TPM - Count):", rankedby)) + 
+        geom_hline(yintercept=0, color="black", size=0.5) + scale_color_gradient(low="blue", high="red") 
+}
+
+# Print output plots
+rankdiff.plot.fn(fdr.rank.df, "FDR")
+rankdiff.plot.fn(lfc.rank.df, "Log2FoldChange")
+rankdiff.plot.fn(up.lfc.rank.df, "Log2FoldChange (Increase)")
+rankdiff.plot.fn(down.lfc.rank.df, "Log2FoldChange (Decrease)")
+
+
+
+```
+
+## Distribution of rank difference in unshrunken data
+
+#### - **y-axis**: abs(TPM-Count inputs) 
+
+#### - **x-axis**: FDR or log2FoldChange (Increase/Decrease)
+
+
+
+
+```{r rankdiff_distribution}
+
+# Set a function subsetting unshrunken data
+unshr.rankdiff.fn <- function(df) {subset(df, Shrinkage == "None")}
+
+# Create a list storing rankdiff data frames 
+rankList <- list(unshr.rankdiff.fn(fdr.rank.df),
+                 unshr.rankdiff.fn(lfc.rank.df),
+                 unshr.rankdiff.fn(up.lfc.rank.df),
+                 unshr.rankdiff.fn(down.lfc.rank.df))
+
+
+# Assine result column as a factor with levels 
+rankdiff.levels <- c("FDR", 
+                     "log2FoldChange", 
+                     "log2FoldChange.Increase", 
+                     "log2FoldChange.Decrease")
+
+
+# Name the list 
+names(rankList) <- rankdiff.levels
+
+# Create a new data frame storing rank difference by result type
+rankdiff.dist <- data.frame(FDR=abs(rankList[[1]]$RankDiff), 
+                            log2FoldChange=abs(rankList[[2]]$RankDiff),
+                            log2FoldChange.Increase=abs(rankList[[3]]$RankDiff),
+                            log2FoldChange.Decrease=abs(rankList[[4]]$RankDiff)) %>% gather(Result, RankDiff) 
+
+rankdiff.dist$Result <- factor(rankdiff.dist$Result, levels=rankdiff.levels)
+
+# Plot distribution of absolute rank difference
+ggplot(rankdiff.dist,
+       aes(x=Result, y=RankDiff, color=Result)) +
+geom_jitter(alpha=0.5) + 
+geom_boxplot(alpha=0.5, fill="grey", color="black") + 
+theme_bw() + 
+theme(axis.text.x=element_text(angle=45, hjust=1)) +
+ggtitle("Distribution of Absolute Rank Difference without Shrinkage \n(TPM - Count Input)") + 
+ylab("Absolute Rank Difference (TPM - Count Input)") 
+```
+
+## Relationship between rank difference and number of transcript versions
+
+#### - **y-axis**: abs(TPM-Count inputs) 
+
+#### - **x-axis**: number of transcripts (number of transcript id / gene id) 
+
+#### - **dot color**: mean rank
+
+#### - 16 genes were missing in the plots
+
+
+```{r rankdiff_vs_transcripts}
+
+# Create a data frame storing the number of transcripts by gene id
+AnnoDb.ntrans <- AnnoDb %>% 
+    group_by(GENEID) %>% 
+    summarize(num.trans=n_distinct(TXID))
+
+# Set a function adding the number of transcripts by gene id 
+add.ntrans.fn <- function(df) {
+
+    left_join(df, AnnoDb.ntrans, by=c("Gene"="GENEID"))}
+
+
+
+
+# Add a column indicating the number of transcripts by gene id to every rankdiff data frame
+for (x in rankdiff.levels) {
+
+    rankList[[x]] <- add.ntrans.fn(rankList[[x]])
+}
+
+
+# Explore the edited data frames
+summary(rankList)
+head(rankList[[1]])
+head(rankList[[2]])
+head(rankList[[3]])
+head(rankList[[4]])
+
+# Set a function plotting rank difference vs number of transcripts 
+rank.ntrans.plot.fn <- function(df, title) {
+
+    ggplot(df, aes(x=num.trans, y=abs(RankDiff), color=MeanRank)) + 
+        geom_jitter(alpha=0.5) + 
+        theme_bw() + 
+        ggtitle(paste("Rank Difference vs Number of Alternative Transcripts \nin", title)) + 
+        xlab("Number of Alternative Transcripts") + 
+        ylab("Absolute Rank Difference (TPM - Counts)") + scale_color_gradient(low="blue", high="red") 
+}
+
+# Print the plots
+rank.ntrans.plot.fn(rankList[[1]], "FDR")
+rank.ntrans.plot.fn(rankList[[2]], "log2FoldChange")
+rank.ntrans.plot.fn(rankList[[3]], "log2FoldChange (Increase)")
+rank.ntrans.plot.fn(rankList[[4]], "log2FoldChange (Decrease)")
+
+```
+
+## Finding genes having large difference in rankings 
+
+```{r large_rankdiff_genes}
+
+# Initialize a list storing rankdiff genes 
+large.rankdiff <- rankList
+
+# Assign a vector storing minimum (thresholds) rankdiff for filtering large rankdiff genes
+rankdiff.thr <- c(10, 10, 10, 10)
+
+names(rankdiff.thr) <- rankdiff.levels
+
+for (x in rankdiff.levels) {
+
+    # Filter out observations below the rankdiff thresholds
+    large.rankdiff[[x]] <- subset(rankList[[x]], 
+                                      abs(RankDiff) > rankdiff.thr[x]) 
+
+}
+
+# Explore the filtered genes 
+summary(large.rankdiff)
+
+dim(large.rankdiff[[rankdiff.levels[1]]])
+dim(large.rankdiff[[rankdiff.levels[2]]])
+dim(large.rankdiff[[rankdiff.levels[3]]])
+dim(large.rankdiff[[rankdiff.levels[4]]])
+
+
+# Set a function saving rankdiff.csv files
+saving.fn <- function(input.df, data.type) { 
+
+    filename <- paste0("tpmVScount_", data.type, "_RankDiff.csv")
+
+    return(write.csv(input.df, filename))
+}
+
+
+
+# Save the filtered and arranged data frames as csv files
+saving.fn(large.rankdiff[[rankdiff.levels[1]]], "FDR")
+saving.fn(large.rankdiff[[rankdiff.levels[2]]], "LFC")
+saving.fn(large.rankdiff[[rankdiff.levels[3]]], "LFC_Increase")
+saving.fn(large.rankdiff[[rankdiff.levels[4]]], "LFC_Decrease")
+```
+
+## Summarizing up/down DEGs with an upset plot 
+
+#### - **red bar**: input type
+
+#### - **blue bar**: directionality of gene expression change
+
+```{r upsetplotting, fig.width=10}
+
+# Set a function cleaning data to generate upset plots 
+upset.input.fn <- function(df) {
+
+    df <- df %>% 
+
+        # Filter genes with valid padj 
+        subset(!is.na(padj)) %>% 
+        
+        mutate(Up=ifelse(FDR == FDRv[1] & log2FoldChange > 0, Gene, ""), # What are upregulated genes? 
+               
+               Down=ifelse(FDR == FDRv[1] & log2FoldChange < 0, Gene, ""),  # What are downregulated genes? 
+               
+               Unchanged=ifelse(FDR == FDRv[2], Gene, ""),   # What are unchanged genes? 
+               
+               TPM_Input=ifelse(Input == "TPM", Gene, ""),   # What are the genes from TPM input? 
+               
+               Counts_Input=ifelse(Input == "Counts", Gene, ""))   # What are the genes from Counts input? 
+
+    # Create a list storing groups of interest
+    upsetInput <- list(Up=df$Up, 
+                       Down=df$Down, 
+                       Unchanged=df$Unchanged, 
+                       TPM_Input=df$TPM, 
+                       Counts_Input=df$Counts) 
+
+    return(upsetInput)
+
+}
+
+upsetList <- upset.input.fn(both.df)
+
+
+# Create the upset plot 
+upset(fromList(upsetList), 
+      sets=names(upsetList),   # What group to display 
+      sets.x.label="Number of Genes per Group",
+      order.by="freq",
+      point.size=3,
+      sets.bar.color=c("red", "red","blue", "blue", "blue"),
+      text.scale = 1.5, number.angles=30) 
+```
+
+
+
+## Session Info 
+
+```{r sessionInfo}
+sessionInfo()
+```
