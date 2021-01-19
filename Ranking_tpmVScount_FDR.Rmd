@@ -1,0 +1,195 @@
+---
+output: html_document
+title: "TPM vs Count Gene Ranking Analysis in Salmon in CD4+ T Cells from WT and Kdm6a cKO Mice"
+author: "Mira Sohn" 
+---
+
+
+## Alignment & DE analysis
+
+### - Alignment: [Link](https://github.com/Mira0507/mouse_cd4/blob/master/README.md)
+
+### - DE analysis: [Link](https://github.com/Mira0507/GSE157852/blob/master/DE_EnsDb.Rmd)
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(
+    warning=FALSE,
+    message=FALSE
+    )
+```
+
+## Loading packages
+
+
+```{r loading_packages}
+library(data.table)
+library(tidyverse)
+library(rmarkdown)
+library(ggplot2)
+```
+
+## Importing and cleaning ranking data
+
+```{r data_import}
+
+# Import data
+rankdiff <- fread("tpmVScount_FDR_RankDiff.csv")[, -1]
+
+
+# Explore the data structure
+dim(rankdiff)
+head(rankdiff)
+
+# Assign ranking category:
+# e.g. log2FoldChange, FDR, etc
+Ranking.Category <- "FDR"
+
+# Subset top/bottom 50 rankdiff genes and add a column assigning difference size
+(large.rankdiff <- head(rankdiff, 50)[, Difference := "Large"])
+(small.rankdiff <- tail(rankdiff, 50)[, Difference := "Small"])
+
+# Combine the two data frames
+total.rankdiff <- rbind(large.rankdiff, small.rankdiff) 
+
+# Explore the data frame
+dim(total.rankdiff)
+head(total.rankdiff)
+
+# Convert ranking difference to absolute values
+total.rankdiff <- mutate(total.rankdiff, RankDiff=abs(RankDiff))
+
+# Rename columns 
+(col.original <- colnames(total.rankdiff))
+(col.new <- c(col.original[1:11], 
+             "Num.Transcripts",
+             "Variant.Alleles",
+             "Repetitive.Conserved",
+             "Repetitive.Simple", 
+             col.original[length(col.original)]))
+
+names(total.rankdiff) <- col.new
+
+# Check out the data frame after renaming
+head(total.rankdiff)
+
+# Clean the data frame for effective plotting 
+cleaned.rankdiff <- gather(total.rankdiff, 
+                           Variable, 
+                           Number, 
+                           RankDiff, 
+                           MeanRank, 
+                           Num.Transcripts,
+                           Variant.Alleles,
+                           Repetitive.Conserved,
+                           Repetitive.Simple)
+
+Var <- unique(cleaned.rankdiff$Variable)
+cleaned.rankdiff$Variable <- factor(cleaned.rankdiff$Variable, levels=Var) 
+
+# Check out the cleaned data frame
+head(cleaned.rankdiff)
+```
+
+## Characterization of differently ranked genes between STAR and HISAT2-mediated differential expression (DE) analysis 
+
+#### - RankDiff: absolute gene rank difference STAR and HISAT2 (followed by featureCounts)
+
+#### - MeanRank: mean rank between STAR and HISAT2
+
+#### - Num.Transcripts: number of alternative transcripts
+
+#### - Variant.Alleles: variant alleles (SNP or indel from ensembl genetic variation table)
+
+#### - Repetitive.Conserved: conserved repetitive elements in reference genome (from Dfam database)
+
+#### - Repetitive.Simple: non-conserved repetitive elements in reference genome (from Dfam)
+
+```{r characterization_plot}
+
+ggplot(cleaned.rankdiff, 
+       aes(x=Difference, 
+           y=abs(Number),
+           color=Difference)) + 
+geom_jitter(width=0.25, alpha=0.7) + 
+    geom_boxplot(alpha=0.5, outlier.shape=NA, color="black", width=0.5) + 
+    facet_wrap(~ Variable, scales="free_y") +
+    theme_bw() + 
+    theme(strip.text.x=element_text(size=11),
+          axis.text.x=element_text(size=10)) + 
+    ggtitle(paste("Characteristics of Differently Ranking Genes in", 
+                  Ranking.Category)) +
+    xlab("Gene Rank Difference") + 
+    ylab("Value")
+```
+
+## Calculating statiatical significance 
+
+
+
+#### - Two-tailed test 
+
+
+```{r t_test}
+
+# Set a function to perform t-test 
+ttest.fn <- function(response.variable) {
+
+    t.test(response.variable ~ Difference, data=total.rankdiff)$p.value
+
+}
+
+# Set a function storing p-values by variable
+vec.fn <- function(pv) {c(pv, rep("", 99))}
+
+# Create a vector storing p-values
+pval.vec <- c(vec.fn(ttest.fn(total.rankdiff$RankDiff)), 
+              vec.fn(ttest.fn(total.rankdiff$MeanRank)),
+              vec.fn(ttest.fn(total.rankdiff$Num.Transcripts)),
+              vec.fn(ttest.fn(total.rankdiff$Variant.Alleles)),
+              vec.fn(ttest.fn(total.rankdiff$Repetitive.Conserved)),
+              vec.fn(ttest.fn(total.rankdiff$Repetitive.Simple)))
+
+# Add a column having calculated p-values 
+cl.rankdiff <- cbind(cleaned.rankdiff,
+                     P.Val=pval.vec)
+
+
+# Print the modified data frame
+head(cl.rankdiff)
+
+```
+
+## Plotting characterization with p-values 
+
+
+```{r pval_added_plot, fig.width=12, fig.height=8}
+
+ggplot(cl.rankdiff, 
+       aes(x=Difference, 
+           y=abs(Number),
+           color=Difference)) + 
+geom_jitter(width=0.25, alpha=0.7) + 
+    geom_boxplot(alpha=0.5, outlier.shape=NA, color="black", width=0.5) + 
+    facet_wrap(~ Variable, scales="free_y") +
+    theme_bw() + 
+    theme(strip.text.x=element_text(size=11),
+          axis.text.x=element_text(size=10)) + 
+    ggtitle(paste("Characteristics of Differently Ranking Genes in", 
+                  Ranking.Category)) +
+    xlab("Gene Rank Difference") + 
+    ylab("Value") + 
+
+    # Add p-values
+    geom_text(data=cl.rankdiff, 
+              mapping=aes(x=Inf, y=Inf, label=P.Val), 
+              vjust=2, hjust=1.1, color="black", size=4) 
+
+```
+
+## Session info
+
+```{r session_info}
+
+sessionInfo()
+
+```
