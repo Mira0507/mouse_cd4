@@ -9,7 +9,7 @@ author: "Mira Sohn"
 
 ### - Alignment: [Link](https://github.com/Mira0507/mouse_cd4/blob/master/README.md)
 
-### - DE analysis: [Link](https://github.com/Mira0507/mouse_cd4/blob/master/DE.Rmd)
+### - DE analysis: [Link](https://github.com/Mira0507/mouse_cd4/blob/master/DE_EnsDb.Rmd)
 
 ```{r global_options, include=FALSE}
 knitr::opts_chunk$set(
